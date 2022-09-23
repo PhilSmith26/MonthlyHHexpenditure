@@ -1,6 +1,6 @@
 # Temporal disaggregation of consumer expenditure from Q to M
 # Value, volume and price
-# September 13, 2022
+# September 22, 2022
 
 setwd(paste0("/Users/philipsmith/Documents/R/Households/",
   "HH_consumption/Consumption_monthly"))
@@ -593,24 +593,22 @@ HHCE <- list(
 #-------------------------------------------------------------------------------
 # List of data frames to be built
 # Qdata      - All the quarterly SAAR data at current prices for consumption
-# Adata      - All of the C-series without indicators, that are not identities,
-#              interpolated to monthly (using Denton-Cholette) for the same time 
-#              range as for Qdata
-# Fdata      - For ARIMA cases; same as Adata except that forecasts are added on end
-# FQdata     - Fdata converted to quarterly
 # CLdata     - All of the monthly indicators, associated with each Chow-Lin 
 #              case, extended to lastmonF by ARIMA is necessary
-# CQdata     - Cdata converted to quarterly
+# Cdata      - Temporary - monthly Chow-Lin interpolated data for one-driver cases
 # CLE1data   - Data for first of two indicators (drivers)
 # CLE1data   - Data for second of two indicators (drivers)
 # CEdata     - Interpolated and extrapolated monthly data for two-driver cases
 # Cdata      - All of the monthly series that were interpolated and extrapolated
 #              using one or two related indicators and the Chow-Lin method
+# REGRES     - All the Chow-Lin regression statistics
+# REGRESpub  - Abbreviated version of REGRES for publication
 # Idata      - All of the identity cases calculated by applying the equations
 #              to the data in Fdata and Cdata
 # Edata      - The final monthly results at current prices for all series,  
-#              interpolated and extrapolated
+#              interpolated and extrapolated to monthly
 # EQdata     - Edata converted to quarterly
+# Diffs      - Test results - should all be zero +/- bits for rounding
 # Vdata      - The quarterly volume data (chain)
 # Pdata      - The quarterly price data (100*Qdata/Vdata)
 # Defdata    - The monthly driver data for the price indexes
@@ -618,8 +616,8 @@ HHCE <- list(
 # Kdata      - The monthly interpolated and extrapolated consumption data 
 #              at constant 2012 prices
 # IKdata     - The monthly identity consumption data at constant 2012 prices
-# FinalKdata - The combination of Kdata and IKdata
-# IPdata    - The full set of monthly price data 
+#              which includes "adjusting entries" pre-2012
+# IPdata     - The full set of monthly price data 
 #-------------------------------------------------------------------------------
 # Retrieve all the quarterly SAAR data in a df called Qdata
 # covering the time period firstqtr to lastqtr
@@ -644,7 +642,7 @@ for (i in 2:(N+1)) {
 #Adata <- data.frame(Date=seq.Date(firstmon,lastmon,by="month"))
 #for (i in 2:(length(Acases)+1)) {
 #  nam <- names(Acases)[i-1]
-#  Adata[i] <- MakeMonthly00(Qdata[,which(colnames(Qdata)==nam)],nam,0,F)
+#  Adata[i] <- MakeMonthlyNoDriver(Qdata[,which(colnames(Qdata)==nam)],nam,0,F)
 #  names(Adata)[i] <- nam
 #}
 #Fdata <- data.frame(Date=seq.Date(firstmon,lastmonF,by="month"))
@@ -677,7 +675,8 @@ for (i in 1:length(CLcases)) {
     tmpval <- tmp1$VALUE
     date1 <- tmp1$Date[1]
     date2 <- tmp1$Date[nrow(tmp1)]
-    if (driv=="CPI" & nam=="CLO") { # Special case: clothing CPI very seasonal
+    # Special case: clothing CPI very seasonal
+    if (driv=="CPI" & nam=="CLO") { 
       tmp1$VALUE <- DoSeasAdj(tmp1$VALUE,firstmonC)
       tmpval <- tmp1$VALUE
     }
@@ -687,7 +686,7 @@ for (i in 1:length(CLcases)) {
         tmp1 <- data.frame(Date=seq.Date(firstmon,date2,"month"),
           VALUE=tmpval)
       } else {
-        tmpval <- backcast(tmp1$VALUE,mondf(firstmon,date1),firstmon)
+        tmpval <- Backcast(tmp1$VALUE,mondf(firstmon,date1),firstmon)
       }
     }
     if (date2>lastmonF) {
@@ -695,7 +694,7 @@ for (i in 1:length(CLcases)) {
       tmpval <- tmp1$VALUE
     }
     if (date2<lastmonF) {
-      print(paste0("The last available date for ",nam," is ",date2,
+      print(paste0("The last available date for ",nam,"-",driv," is ",date2,
         " so the indicator series will be extended with ARIMA to ",lastmonF))
       tmpval <- ArimaForecast(tmp1$VALUE,mondf(date2,lastmonF))
     }
@@ -709,13 +708,9 @@ MODELS_ChowLin <- list()
 Cdata <- data.frame(Date=seq.Date(firstmon,lastmonF,by="month"))
 for (i in 2:(length(CLcases)+1)) {
   nam <- names(CLcases)[i-1]
-  if (nam=="CANN") {
-    Cdata[i] <- MakeMonthly1CANN(0,F)
-  } else {
-    NewList <- MakeMonthly1(MODELS_ChowLin,nam,0,F)
-    Cdata[i] <- NewList[[2]]
-    MODELS_ChowLin <- NewList[[1]]
-  }
+  NewList <- MakeMonthly1Driver(MODELS_ChowLin,nam,0,F)
+  Cdata[i] <- NewList[[2]]
+  MODELS_ChowLin <- NewList[[1]]
   names(Cdata)[i] <- nam
 }
 #-------------------------------------------------------------------------------
@@ -733,7 +728,6 @@ CLE2data <- data.frame(Date=seq.Date(firstmon,lastmonF,by="month")) # extra driv
 for (i in 2:(length(CLEcases)+1)) {
   # first get indicator 1
   nam <- names(CLEcases)[i-1]
-  print(paste0("Series is ",nam))
   vec <- HHCE[[nam]]$d_vnumber 
   driv <- HHCE[[nam]]$driver 
   tmp1 <- get_cansim_vector(vec,firstmonC)
@@ -748,7 +742,7 @@ for (i in 2:(length(CLEcases)+1)) {
       VALUE=tmpval)
   }
   if (date1>firstmon) { # backcast the series to firstmon via ARIMA
-    tmpval <- backcast(tmp1$VALUE,mondf(firstmon,date1),firstmon) # doesn't work for CANN
+    tmpval <- Backcast(tmp1$VALUE,mondf(firstmon,date1),firstmon) # doesn't work for CANN
   }
   if (date2>lastmonF) {
     tmp1 <- filter(tmp1,Date<=lastmonF)
@@ -777,7 +771,7 @@ for (i in 2:(length(CLEcases)+1)) {
       VALUE=tmpval)
   }
   if (date1>firstmon) { # backcast the series to firstmon via ARIMA
-    tmpval <- backcast(tmp1$VALUE,mondf(firstmon,date1),firstmon) # doesn't work for CANN
+    tmpval <- Backcast(tmp1$VALUE,mondf(firstmon,date1),firstmon) # doesn't work for CANN
   }
   if (date2>lastmonF) {
     tmp1 <- filter(tmp1,Date<=lastmonF)
@@ -799,8 +793,7 @@ for (i in 2:(length(CLEcases)+1)) {
 CEdata <- data.frame(Date=seq.Date(firstmon,lastmonF,by="month"))
 for (i in 1:length(CLEcases)) {
   nam <- names(CLEcases)[i]
-  #CEdata[i+1] <- MakeMonthly2(nam,0,F)
-  NewList <- MakeMonthly2(MODELS_ChowLin,nam,0,F)
+  NewList <- MakeMonthly2Driver(MODELS_ChowLin,nam,0,F)
   CEdata[i+1] <- NewList[[2]]
   MODELS_ChowLin <- NewList[[1]]
   colnames(CEdata)[i+1] <- nam
@@ -865,14 +858,16 @@ j <- j+1
 # Do the big identity last because it depends on the others
 IdentityCases <- c(IdentityCases,HHCE[1])
 Idents[j] <- HHCE[[1]]$equation
-# Edata will be monthly, current prices, SAAR
-Edata <- Cdata  # cbind(Cdata[,2:ncol(Cdata)]) # Fdata removed
+# Edata will be the final monthly, current prices, SAAR results
+Edata <- Cdata
 Idata <- data.frame(Date=seq.Date(firstmon,lastmonF,by="month"))
+# Apply the identities to calculate the identity results
 for (i in 2:(length(IdentityCases)+1)) {
   nam <- names(IdentityCases)[i-1]
   Idata[i] <- round(eval(parse(text=Idents[i-1]),Edata),0)
+  colnames(Idata)[i] <- nam
   Edata <- cbind(Edata,Idata[i])
-  colnames(Edata)[ncol(Edata)] <- names(IdentityCases)[i-1]
+  colnames(Edata)[ncol(Edata)] <- nam
 }
 Edata <- select(Edata,all_of(c("Date",HHCEnames))) 
 # Save C$ results for use in HHI table
@@ -916,7 +911,7 @@ tbl1 <- select(tbl1,names,everything())
 tbl1 <- mutate(tbl1,across(2:ncol(tbl1),as.numeric))
 
 colls <- c("V1","V2","V3","V4","V5","V6","V7","V8") # Dec 2021 to July 2022
-tabName <- "HHCE_table_July2022_Sep0522.png"
+tabName <- "HHCE_table1_July2022_Sep222022.png"
 LastMonth <- "July"
 
 gt_tbl1 <- gt(data=tbl1)
@@ -999,7 +994,8 @@ TransposeTbl <- function(df) {
   df1$names <- nm
   df1 <- select(df1,names,everything())
   df1 <- mutate(df1,across(2:ncol(df1),as.numeric))
-}   
+}
+EQdata <- filter(EQdata, Date<as.Date("2022-07-01"))
 tblQl <- TransposeTbl(EQdata)
 tblQp <- mutate(EQdata,across(2:ncol(Edata),function (x) round(100*(x/lag(x)-1),1)))
 tblQp <- TransposeTbl(tblQp)
@@ -1012,12 +1008,12 @@ tbl1$Q2p <- tblQp[,ncol(tblQp)]
 tbl1 <- select(tbl1,names,Q2l,Q1p,Q2p,everything())
 
 colls <- c("V1","V2","V3","V4","V5","V6","V7","V8") # Dec 2021 to July 2022
-tabName <- "HHCE_table_July2022_Sep0522.png"
+tabName <- "HHCE_table2_July2022_Sep222022.png"
 LastMonth <- "July"
 
 gt_tbl1 <- gt(data=tbl1)
 gt_tbl1 <- gt_tbl1 %>% 
-  tab_options(table.font.size=12,container.width = 950) %>%
+  tab_options(table.font.size=12,container.width = 1250) %>%
   tab_header(
     title=md(html(paste0("**Household final consumption expenditure at current prices<br>December 2021 to ",
       LastMonth," 2022<br>Monthly percentage change**")))
@@ -1065,8 +1061,8 @@ gt_tbl1 <- gt_tbl1 %>%
   tab_style(style = cell_text(indent=pct(3.5)),
     locations = cells_body(
       columns = 1,
-      rows = c(3,4,5,7,8,10,11,12,13,14,16,17,18,19,
-    20,23,24,25,28,29,30,31,32,35,36,40,41))
+      rows = c(4,5,6,8,9,11,12,13,14,15,17,18,19,
+    20,21,24,25,26,29,30,31,32,33,36,37,41,42))
   ) %>%
   tab_style( # column label style
     style = list(
@@ -1076,6 +1072,11 @@ gt_tbl1 <- gt_tbl1 %>%
     locations = cells_column_labels(
       columns=c(names,Q2l,Q1p,Q2p,all_of(colls)))
   ) %>%
+  opt_row_striping(row_striping = TRUE) %>%
+  opt_vertical_padding(scale = 0.25) %>%
+  tab_style(style=cell_borders(sides="right",
+    color="black",weight=px(1.5),style="solid"),
+    locations=cells_body(columns=c(2,4),rows=1:42)) %>%
   tab_footnote(
     footnote = paste0("Estimates derived using time disaggregation methods ",
        "credited to F.T. Denton, P.A. Cholette, G.C. Chow and A.-L. Lin, ",
@@ -1094,7 +1095,7 @@ gt_tbl1 <- gt_tbl1 %>%
   )
 gt_tbl1
 setwd(paste0("/Users/philipsmith/Documents/R/Households/HH_consumption/Consumption_monthly/"))
-gtsave(gt_tbl1,"HHCE_table_July2022_PC01.png")
+gtsave(gt_tbl1,"HHCE_table2_July2022_PC01.png")
       
 HHCEP01 <- mutate(Edata,across(2:ncol(Edata),function (x) round(100*(x/lag(x)-1),1)))
 # Make monthly/quarterly series
@@ -1139,7 +1140,7 @@ c1 <- ggplot(filter(df,Date>=as.Date("2020-09-01")))+
   theme(axis.text.x = element_text(angle=0,hjust=1,size=9)) +
   theme(axis.text.y = element_text(size=12))
 c1
-ggsave("MHHCE_dual_chart_volSep2022.png",c1,height=8.5,width=11,dpi=300)
+ggsave("MHHCE_dual_chart_volSep222022.png",c1,height=8.5,width=11,dpi=300)
 
 #-------------------------------------------------------------------------------
 } # end of printResultsCdollar
@@ -1209,7 +1210,8 @@ Vdata <- select(Vdata,"Date","HHFC","FB","ATC","AB","TOB","CANN","CF","CLO",
   "AVPI","ODRC","OREG","RCS","NBS","EDU","FBAS","FBS","AS","FIN",
   "MISC","NEA","TECA","TENR")
 Vnames <- names(Vdata)
-# Calculate the sum of the four quarters in 2012 - should be same in C$ and K$ - both are SAAR
+# Calculate the sum of the four quarters in 2012 - both are SAAR
+# This should be same in C$ and K$ except for rounding error
 tmp <- filter(Vdata,Date>as.Date("2011-10-01") & Date<as.Date("2013-01-01"))
 tmp <- tmp[2:ncol(tmp)] # remove Date column
 SumVQ2012 <- colSums(tmp)
@@ -1228,7 +1230,7 @@ for (i in 1:nrow(Qdata)) {
 Pnames <- names(HHCE) # 42 consumption time series from 36-10-0107-01
 #-------------------------------------------------------------------------------
 # Find all the deflation cases, which are the cases where 
-# interpolation and extrapolation are done.
+# interpolation and extrapolation are needed
 Defcases <- list()
 Defnums <- vector()
 for (i in 1:N) {
@@ -1238,7 +1240,7 @@ for (i in 1:N) {
   }
 }
 #-------------------------------------------------------------------------------
-# Collect the consumption deflator indicators, check availability  
+# Collect the consumption deflator drivers, check availability  
 # dates and forecast to lastmonF with ARIMA if necessary
 # The Defdata data frame is entirely CPIs
 Defdata <- data.frame(Date=seq.Date(firstmon,lastmonF,by="month"))
@@ -1246,7 +1248,7 @@ for (i in 1:length(Defcases)) {
     vec <- HHCE[[Defnums[i]]]$deflator 
     tmp1 <- get_cansim_vector(vec,firstmonC)
     if (names(Defcases)[i]=="CLO") { # Clothing CPI is very seasonal
-      tmpval <- SEASADJ(tmp1$VALUE,year(firstmon))
+      tmpval <- DoSeasAdj(tmp1$VALUE,year(firstmon))
       tmp1$VALUE <- tmpval
     } else {
       tmpval <- tmp1$VALUE
@@ -1257,22 +1259,24 @@ for (i in 1:length(Defcases)) {
     # because it starts too late to backcast the gap
     if(HHCE[[Defnums[i]]]$name=="Cannabis [C123]") {
       tmpval <- tmp1$VALUE
-      tmpval <- PAD1(tmpval,mondf(firstmon, date1),"b")
+      tmpval <- PADzero(tmpval,mondf(firstmon, date1),"b")
       tmp1 <- data.frame(Date=seq.Date(firstmon,date2,by="month"),
         VALUE=tmpval)
       date1 <- tmp1$Date[1]
       date2 <- tmp1$Date[nrow(tmp1)]
     }
     if (date1>firstmon) { # backcast the series to firstmon via ARIMA
-      tmpval <- backcast(tmp1$VALUE,mondf(firstmon,date1),firstmon)
+      tmpval <- Backcast(tmp1$VALUE,mondf(firstmon,date1),firstmon)
     }
     if (date2>lastmonF) {
       tmp1 <- filter(tmp1,Date<=lastmonF)
       tmpval <- tmp1$VALUE
     }
     if (date2<lastmonF) {
-      print(paste0("The last available date for ",names(Defcases)[i]," is ",date2,
-        " so the indicator series will be extended with ARIMA to ",lastmonF))
+      print(paste0("The last available date for ",names(Defcases)[i],
+        " is ",date2,
+        " so the indicator series will be extended with ARIMA to ",
+        lastmonF))
       tmpval <- ArimaForecast(tmp1$VALUE,mondf(date2,lastmonF))
     }
     Defdata[,i+1] <- tmpval
@@ -1282,16 +1286,15 @@ for (i in 1:length(Defcases)) {
 # Use the Chow-Lin procedure in each of the cases where it applies, with 
 # the indicators in Defdata (which all extend to lastmonF)
 # All price indexes have one driver only
+MODELSP_ChowLin <- list()
 CPdata <- data.frame(Date=seq.Date(firstmon,lastmonF,by="month"))
 for (i in 2:(length(Defcases)+1)) {
   nam <- names(Defcases)[i-1]
-  if (nam=="CANN") { # Special case
-    CPdata[,i] <- MakeMonthlyP1CANN(F)
-  } else {
-    CPdata[,i] <- MakeMonthlyP1(nam,F)
-  }
+  NewList <- MakeMonthlyP1Driver(MODELSP_ChowLin,nam,F)
+  CPdata[,i] <- NewList[[2]]
+  MODELS_ChowLin <- NewList[[1]]
+  colnames(CPdata)[i] <- nam
 }
-(colnames(CPdata) <- c("Date",names(Defcases)))
 (CPnames <- names(CPdata))
 #-------------------------------------------------------------------------------
 # Calculate the volume data using the interpolated and extrapolated
@@ -1314,16 +1317,15 @@ for (i in 2:(length(IdentityCases)+1)) {
     vec <- HHCE[[nam]]$AdjEntry # get that vnumber
     dfTmp <- get_cansim_vector(vec,firstqtrC)
     dfTmp <- filter(dfTmp,Date<=lastqtr)
-    MadjEntry <- MakeMonthly00(dfTmp$VALUE,nam,0,F)
+    MadjEntry <- MakeMonthlyNoDriver(dfTmp$VALUE,nam,0,F)
     if(length(MadjEntry)<Nobs) {
       AddNobs <- mondf(lastmon,lastmonF)
-      MadjEntry <- PAD1(MadjEntry,AddNobs,"f")
+      MadjEntry <- PADzero(MadjEntry,AddNobs,"f")
     }
     IKdata[,i] <- IKdata[,i]+MadjEntry
   }
   Kdata <- cbind(Kdata,IKdata[i])
   colnames(Kdata)[ncol(Kdata)] <- nam
-  #readline(prompt="Press [enter] to continue")
 }
 (colnames(IKdata) <- c("Date",names(IdentityCases)))
 Kdata <- select(Kdata,"Date","HHFC","FB","ATC","AB","TOB","CANN","CF","CLO",
@@ -1336,6 +1338,14 @@ Kdata <- select(Kdata,"Date","HHFC","FB","ATC","AB","TOB","CANN","CF","CLO",
 KdataQtrlyRates <- mutate(Kdata,across(2:ncol(Kdata),
   function(x) round(x/4,0)))
 KdataQtrlyRates <- M_to_Q(KdataQtrlyRates)
+# Calculate percentage differences
+DiffsVol <- Vdata
+for (i in 1:nrow(Vdata)) {
+  for (j in 2:ncol(Vdata)) {
+    DiffsVol[i,j] <- round(100*(KdataQtrlyRates[i,j]/(Vdata[i,j]/4)-1),2)
+  }
+}
+View(DiffsVol)
 # Now make complete set of monthly implicit price indexes
 IPdata <- data.frame(Date=seq.Date(firstmon,lastmonF,by="month"))
 for (i in 1:nrow(Edata)) {
@@ -1376,28 +1386,21 @@ colnames(df) <- c("V2022M4","V2022M5","V2022M6","V2022M7",
 df <- select(df,Category,everything())
 df <- mutate(df,across(2:ncol(df),as.numeric))
 
-tabName <- "HHCE_table_July2022_Sep0822.png"
+tabName <- "HHCE_table3_July2022_Sep222022.png"
 LastMonth <- "July"
 
-gt_tbl1 <- gt(data=df)
-gt_tbl1 <- tab_options(gt_tbl1,table.font.size=12,container.width = 1350)
-gt_tbl1 <- tab_header(gt_tbl1,
+gt_tbl1 <- gt(data=df) %>%
+tab_options(table.font.size=12,container.width = 1350) %>%
+tab_header(
   title=md(html(paste0("**Household final consumption expenditure<br>",
-    "Seasonally adjusted at annual rates<br>April 2022 to ",LastMonth," 2022**"))))
-gt_tbl1 <- tab_source_note(gt_tbl1,
-    source_note=md(html("@PhilSmith26")))
-gt_tbl1 <- cols_align(gt_tbl1,
-    align=c("left"),
-    columns=c(`Category`))
-gt_tbl1 <- fmt_number(gt_tbl1,
-    columns=all_of(c(2,3,4,5,10,11,12,13)),
-    decimals=0,
-    use_seps=TRUE)
-gt_tbl1 <- fmt_number(gt_tbl1,
-    columns=all_of(c(6,7,8,9)),
-    decimals=1,
-    use_seps=FALSE)
-gt_tbl1 <- cols_label(gt_tbl1,
+    "Seasonally adjusted at annual rates<br>April 2022 to ",
+    LastMonth," 2022**")))) %>%
+tab_source_note(source_note=md(html("@PhilSmith26"))) %>%
+cols_align(align=c("left"),columns=c(`Category`)) %>%
+fmt_number(columns=all_of(c(2,3,4,5,10,11,12,13)),
+    decimals=0,use_seps=TRUE) %>%
+fmt_number(columns=all_of(c(6,7,8,9)),decimals=1,use_seps=FALSE) %>%
+cols_label(
     `Category`="",
     `V2022M4`=md("**Apr<br>2022**"),
     `V2022M5`=md("**May<br>2022**"),
@@ -1410,55 +1413,51 @@ gt_tbl1 <- cols_label(gt_tbl1,
     `K2022M4`=md("**Apr<br>2022**"),
     `K2022M5`=md("**May<br>2022**"),
     `K2022M6`=md("**Jun<br>2022**"),
-    `K2022M7`=md("**Jul<br>2022**"))
-gt_tbl1 <- tab_spanner(gt_tbl1,label="Millions of dollars",
-  columns=c(2,3,4,5),id="Cdollars")
-gt_tbl1 <- tab_spanner(gt_tbl1,label="Price index, 2012=100",
-  columns=c(6,7,8,9),id="Price")
-gt_tbl1 <- tab_spanner(gt_tbl1,label="Millions of constant 2012 dollars",
-  columns=c(10,11,12,13),id="Kdollars")
-gt_tbl1 <- data_color(gt_tbl1,
-    columns=all_of(2:13),
-    colors=scales::col_numeric(
-      palette=c(
-        "#E3F2FD"),
-      domain=c(-10000000.0,1000000000.0),
-    ))
-gt_tbl1 <- tab_style(gt_tbl1,style = cell_text(indent=pct(3.5)),
-    locations = cells_body(
-      columns = 1,
-      rows = c(2,3,7,10,16,22,23,27,28,34,35,38,39,40)))
-gt_tbl1 <- tab_style(gt_tbl1,style = cell_text(indent=pct(6.5)),
+    `K2022M7`=md("**Jul<br>2022**")) %>%
+tab_spanner(label="Millions of dollars",
+  columns=c(2,3,4,5),id="Cdollars") %>%
+tab_spanner(label="Price index, 2012=100",
+  columns=c(6,7,8,9),id="Price") %>%
+tab_spanner(label="Millions of constant 2012 dollars",
+  columns=c(10,11,12,13),id="Kdollars") %>%
+data_color(columns=all_of(2:13),
+    colors=scales::col_numeric(palette=c("#E3F2FD"),
+      domain=c(-10000000.0,1000000000.0))) %>%
+tab_style(style = cell_text(indent=pct(3.5)),
+    locations = cells_body(columns = 1,
+      rows = c(2,3,7,10,16,22,23,27,28,34,35,38,39,40))) %>%
+tab_style(style = cell_text(indent=pct(6.5)),
     locations = cells_body(
       columns = 1,
       rows = c(4,5,6,8,9,11,12,13,14,15,17,18,19,20,
-        21,24,25,26,29,30,31,32,33,36,37,41,42)))
-gt_tbl1 <- tab_style(gt_tbl1, # column label style
+        21,24,25,26,29,30,31,32,33,36,37,41,42))) %>%
+tab_style(
     style = list(
       cell_fill(color = "#E3F2FD"),
       cell_text(weight = "bold")
     ),
     locations = cells_column_labels(
-      columns=c(Category,all_of(2:13))))
-gt_tbl1 <- tab_style(gt_tbl1,
+      columns=c(Category,all_of(2:13)))) %>%
+tab_style(
     style = list(
       cell_fill(color = "#E3F2FD"),
       cell_text(weight = "bold")
       ),
     locations = cells_title()
-  )
-gt_tbl1 <- tab_style(gt_tbl1,
+  ) %>%
+tab_style(
     style = list(
       cell_fill(color = "#E3F2FD"),
       cell_text(weight = "bold")
       ),
     locations = cells_column_spanners(spanners = everything())
-  )
-gt_tbl1 <- opt_row_striping(gt_tbl1, row_striping = TRUE)
-gt_tbl1 <- opt_vertical_padding(gt_tbl1, scale = 0.25)
-gt_tbl1 <- tab_style(gt_tbl1,style=cell_borders(sides="right",color="black",
-  weight=px(1.5),style="solid"),locations=cells_body(columns=c(5,9),rows=1:42))
-gt_tbl1 <- tab_footnote(gt_tbl1,
+  ) %>%
+opt_row_striping(row_striping = TRUE) %>%
+opt_vertical_padding(scale = 0.25) %>%
+tab_style(style=cell_borders(sides="right",color="black",
+  weight=px(1.5),style="solid"),
+  locations=cells_body(columns=c(5,9),rows=1:42)) %>%
+tab_footnote(
     footnote = paste0("Estimates derived using time disaggregation methods ",
        "credited to F.T. Denton, P.A. Cholette, G.C. Chow and A.-L. Lin, plus",
        "autoregressive moving-average models and data from Statistics ",
@@ -1495,26 +1494,22 @@ df <- select(df,Category,everything())
 df <- mutate(df,across(2:ncol(df),as.numeric))
 df[40,2:13] <- NA
 
-tabName <- "HHCE_table_July2022_Sep0822PC01.png"
+tabName <- "HHCE_table4_July2022_Sep0822PC01.png"
 LastMonth <- "July"
 
-gt_tbl1 <- gt(data=df)
-gt_tbl1 <- tab_options(gt_tbl1,table.font.size=12,container.width = 1250)
-gt_tbl1 <- tab_header(gt_tbl1,
-  title=md(html(paste0("**Household final consumption expenditure<br>",
-    "Seasonally adjusted<br>One-month percentage change<br>April 2022 to ",
-    LastMonth," 2022**"))))
-gt_tbl1 <- tab_source_note(gt_tbl1,
-    source_note=md(html("@PhilSmith26")))
-gt_tbl1 <- cols_align(gt_tbl1,
-    align=c("left"),
-    columns=c(`Category`))
-gt_tbl1 <- sub_missing(gt_tbl1,columns=2:13,rows=40,missing_text="---")
-gt_tbl1 <- fmt_number(gt_tbl1,
-    columns=all_of(c(2,3,4,5,6,7,8,9,10,11,12,13)),
+gt_tbl1 <- gt(data=df) %>%
+tab_options(table.font.size=12,container.width = 1250) %>%
+tab_header(
+  title=md(html(paste0("**Household final consumption expenditure ",
+    "- value, price and volume<br>Seasonally adjusted<br>One-month ",
+    "percentage change<br>April 2022 to ",LastMonth," 2022**")))) %>%
+tab_source_note(source_note=md(html("@PhilSmith26"))) %>%
+cols_align(align=c("left"),columns=c(`Category`)) %>%
+sub_missing(columns=2:13,rows=40,missing_text="---") %>%
+fmt_number(columns=all_of(c(2,3,4,5,6,7,8,9,10,11,12,13)),
     decimals=1,
-    use_seps=TRUE)
-gt_tbl1 <- cols_label(gt_tbl1,
+    use_seps=TRUE) %>%
+cols_label(
     `Category`="",
     `V2022M4`=md("**Apr<br>2022**"),
     `V2022M5`=md("**May<br>2022**"),
@@ -1527,62 +1522,62 @@ gt_tbl1 <- cols_label(gt_tbl1,
     `K2022M4`=md("**Apr<br>2022**"),
     `K2022M5`=md("**May<br>2022**"),
     `K2022M6`=md("**Jun<br>2022**"),
-    `K2022M7`=md("**Jul<br>2022**"))
-gt_tbl1 <- tab_spanner(gt_tbl1,label="Millions of dollars",
-  columns=c(2,3,4,5),id="Cdollars")
-gt_tbl1 <- tab_spanner(gt_tbl1,label="Price index, 2012=100",
-  columns=c(6,7,8,9),id="Price")
-gt_tbl1 <- tab_spanner(gt_tbl1,label="Millions of constant 2012 dollars",
-  columns=c(10,11,12,13),id="Kdollars")
-gt_tbl1 <- data_color(gt_tbl1,
-    columns=all_of(2:13),
+    `K2022M7`=md("**Jul<br>2022**")) %>%
+tab_spanner(label="Millions of dollars",
+  columns=c(2,3,4,5),id="Cdollars") %>%
+tab_spanner(label="Price index, 2012=100",
+  columns=c(6,7,8,9),id="Price") %>%
+tab_spanner(label="Millions of constant 2012 dollars",
+  columns=c(10,11,12,13),id="Kdollars") %>%
+data_color(columns=all_of(2:13),
     colors=scales::col_numeric(
       palette=c(
         "#E3F2FD"),
-      domain=c(-10000000.0,1000000000.0),
-    ))
-gt_tbl1 <- tab_style(gt_tbl1,style = cell_text(indent=pct(3.5)),
+      domain=c(-10000000.0,1000000000.0)
+    )) %>%
+tab_style(style = cell_text(indent=pct(3.5)),
     locations = cells_body(
       columns = 1,
-      rows = c(2,3,7,10,16,22,23,27,28,34,35,38,39,40)))
-gt_tbl1 <- tab_style(gt_tbl1,style = cell_text(indent=pct(6.5)),
+      rows = c(2,3,7,10,16,22,23,27,28,34,35,38,39,40))) %>%
+tab_style(style = cell_text(indent=pct(6.5)),
     locations = cells_body(
       columns = 1,
       rows = c(4,5,6,8,9,11,12,13,14,15,17,18,19,20,
-        21,24,25,26,29,30,31,32,33,36,37,41,42)))
-gt_tbl1 <- tab_style(gt_tbl1, # column label style
+        21,24,25,26,29,30,31,32,33,36,37,41,42))) %>%
+tab_style(
     style = list(
       cell_fill(color = "#E3F2FD"),
       cell_text(weight = "bold")
     ),
     locations = cells_column_labels(
-      columns=c(Category,all_of(2:13))))
-gt_tbl1 <- tab_style(gt_tbl1, # format for row with NAs
+      columns=c(Category,all_of(2:13)))) %>%
+tab_style( # format for row with NAs
     style = list(
       cell_fill(color = "#E3F2FD"),
       cell_text(weight = "bold")
     ),
     locations = cells_body(rows=40,
-      columns=c(all_of(2:13))))
-gt_tbl1 <- tab_style(gt_tbl1,
+      columns=c(all_of(2:13)))) %>%
+tab_style(
     style = list(
       cell_fill(color = "#E3F2FD"),
       cell_text(weight = "bold")
       ),
     locations = cells_title()
-  )
-gt_tbl1 <- tab_style(gt_tbl1,
+  ) %>%
+tab_style(
     style = list(
       cell_fill(color = "#E3F2FD"),
       cell_text(weight = "bold")
       ),
     locations = cells_column_spanners(spanners = everything())
-  )
-gt_tbl1 <- opt_row_striping(gt_tbl1, row_striping = TRUE)
-gt_tbl1 <- opt_vertical_padding(gt_tbl1, scale = 0.25)
-gt_tbl1 <- tab_style(gt_tbl1,style=cell_borders(sides="right",color="black",
-  weight=px(1.5),style="solid"),locations=cells_body(columns=c(5,9),rows=1:42))
-gt_tbl1 <- tab_footnote(gt_tbl1,
+  ) %>%
+opt_row_striping(row_striping = TRUE) %>%
+opt_vertical_padding(scale = 0.25) %>%
+tab_style(style=cell_borders(sides="right",color="black",
+  weight=px(1.5),style="solid"),
+  locations=cells_body(columns=c(5,9),rows=1:42)) %>%
+tab_footnote(
     footnote = paste0("Estimates derived using time disaggregation methods ",
        "credited to F.T. Denton, E.B. Dagum, P.A. Cholette, G.C. Chow and A.-L. Lin, plus ",
        "autoregressive moving-average models and data from Statistics ",
